@@ -71,9 +71,9 @@ vim inventory/vars.env
 Заполните ваши IP-адреса и IQN:
 
 bash
-export STORAGE_IP="10.20.3.23"
-export CLIENT1_IP="10.2.2.243"
-export CLIENT1_IQN="iqn.2014-05.com.raidix:target.684698"
+export STORAGE_IP="STORAGE_IP"
+export CLIENT1_IP="CLIENT_IP"
+export CLIENT1_IQN="CLIENT1_IQN"
 # ... и так далее
 3. Генерация inventory
 bash
