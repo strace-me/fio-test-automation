@@ -1,0 +1,63 @@
+pipeline {
+    agent { label 'ansible' }
+    
+    environment {
+        ANSIBLE_INVENTORY = "/opt/fio-test/inventory/hosts.ini"
+        ANSIBLE_HOST_KEY_CHECKING = "False"
+    }
+    
+    parameters {
+        choice(
+            name: 'CLIENT_SELECTION',
+            choices: ['all_fio', 'client_group_a', 'client_group_b', 'custom'],
+            description: 'Select which clients to test'
+        )
+        choice(
+            name: 'TEST_TYPE',
+            choices: ['randread', 'randwrite', 'read', 'write'],
+            description: 'Type of I/O test'
+        )
+        choice(
+            name: 'BLOCK_SIZE',
+            choices: ['4k', '64k', '1M'],
+            description: 'Block size for test'
+        )
+        string(
+            name: 'RUNTIME',
+            defaultValue: '30',
+            description: 'Test duration in seconds'
+        )
+        string(
+            name: 'IODEPTH',
+            defaultValue: '128',
+            description: 'Queue depth'
+        )
+        string(
+            name: 'NUMJOBS',
+            defaultValue: '4',
+            description: 'Number of parallel jobs'
+        )
+    }
+    
+    stages {
+        stage('Run FIO Tests') {
+            steps {
+                sh '''
+                    ansible-playbook -i ${ANSIBLE_INVENTORY} /opt/fio-test/playbooks/fio_test.yml \
+                        -e "target_hosts=${CLIENT_SELECTION}" \
+                        -e "test_type=${TEST_TYPE}" \
+                        -e "block_size=${BLOCK_SIZE}" \
+                        -e "runtime=${RUNTIME}" \
+                        -e "iodepth=${IODEPTH}" \
+                        -e "numjobs=${NUMJOBS}"
+                '''
+            }
+        }
+    }
+    
+    post {
+        always {
+            archiveArtifacts artifacts: '/var/lib/jenkins/results/**/*.json', allowEmptyArchive: true
+        }
+    }
+}
