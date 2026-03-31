@@ -1,0 +1,220 @@
+# ============================================================================
+# Ansible Playbook: Setup LUNs on storage clients (robust version)
+# ============================================================================
+# This playbook:
+#   1. Cleans up any existing iSCSI sessions and node records
+#   2. Discovers iSCSI targets
+#   3. Logs in to the specified target (lun_iqn)
+#   4. Detects the new disk (by comparing disk list before/after)
+#   5. Formats and mounts it
+#   6. Creates a test file
+# ============================================================================
+
+- name: Setup LUNs on storage clients
+  hosts: "{{ target_hosts | default('fio_clients') }}"
+  gather_facts: yes
+  vars:
+    test_mount: "/mnt/lun_test"
+    storage_ip: "10.20.3.23"
+    force_format: false
+    create_test_file: true
+
+  tasks:
+    # ========================================================================
+    # 1. INSTALL iSCSI INITIATOR
+    # ========================================================================
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      tags: [install]
+
+    - name: Install iSCSI initiator
+      apt:
+        name:
+          - open-iscsi
+          - sysfsutils
+          - lsscsi
+        state: present
+      tags: [install]
+
+    - name: Start and enable iscsid service
+      systemd:
+        name: iscsid
+        state: started
+        enabled: yes
+      tags: [install]
+
+    # ========================================================================
+    # 2. CLEANUP EXISTING iSCSI CONFIGURATION
+    # ========================================================================
+    - name: Logout from all iSCSI sessions
+      shell: |
+        iscsiadm -m session -u 2>/dev/null || true
+      changed_when: false
+      tags: [cleanup]
+
+    - name: Remove all iSCSI node records
+      shell: |
+        iscsiadm -m node -o delete 2>/dev/null || true
+      changed_when: false
+      tags: [cleanup]
+
+    # ========================================================================
+    # 3. CONNECT iSCSI TARGET
+    # ========================================================================
+    - name: Get list of disks before connection
+      shell: |
+        lsblk -o NAME,SIZE,TYPE | grep disk | awk '{print "/dev/"$1}'
+      register: disks_before
+      changed_when: false
+      tags: [connect]
+
+    - name: Discover iSCSI targets
+      shell: |
+        iscsiadm -m discovery -t sendtargets -p {{ storage_ip }} 2>&1
+      register: discovery
+      changed_when: false
+      tags: [connect]
+
+    - name: Login to iSCSI target
+      shell: |
+        iscsiadm -m node --targetname="{{ lun_iqn }}" --portal={{ storage_ip }}:3260 --login 2>&1
+      when: lun_iqn is defined
+      register: login_result
+      changed_when: "'Login successful' in login_result.stdout"
+      tags: [connect]
+
+    - name: Configure automatic login on boot
+      shell: |
+        iscsiadm -m node --targetname="{{ lun_iqn }}" --portal={{ storage_ip }}:3260 \
+          --op=update --name=node.startup --value=automatic 2>&1 || true
+      when: lun_iqn is defined
+      tags: [connect]
+
+    - name: Wait for LUN device to appear
+      pause:
+        seconds: 5
+      tags: [connect]
+
+    - name: Rescan SCSI bus
+      shell: |
+        for host in /sys/class/scsi_host/host*; do
+          echo "- - -" > $host/scan 2>/dev/null || true
+        done
+      changed_when: false
+      tags: [connect]
+
+    - name: Get list of disks after connection
+      shell: |
+        lsblk -o NAME,SIZE,TYPE | grep disk | awk '{print "/dev/"$1}'
+      register: disks_after
+      changed_when: false
+      tags: [connect]
+
+    # ========================================================================
+    # 4. DETECT NEW DISK
+    # ========================================================================
+    - name: Find new disk (LUN)
+      set_fact:
+        actual_lun: "{{ item }}"
+      loop: "{{ disks_after.stdout_lines }}"
+      when: item not in disks_before.stdout_lines
+      tags: [detect]
+
+    - name: Display detected LUN
+      debug:
+        msg: "Client: {{ inventory_hostname }} | New LUN device: {{ actual_lun }}"
+      when: actual_lun is defined
+      tags: [detect]
+
+    - name: Fail if no new disk detected
+      fail:
+        msg: "No new LUN device detected for {{ inventory_hostname }}! Check iSCSI connection."
+      when: actual_lun is not defined
+      tags: [detect]
+
+    # ========================================================================
+    # 5. FORMAT LUN (if needed)
+    # ========================================================================
+    - name: Check if LUN is already formatted
+      shell: blkid {{ actual_lun }} 2>/dev/null | grep -q ext4 && echo "yes" || echo "no"
+      register: is_formatted
+      changed_when: false
+      tags: [format]
+
+    - name: Create filesystem on LUN
+      filesystem:
+        fstype: ext4
+        dev: "{{ actual_lun }}"
+        force: "{{ force_format | bool }}"
+      when:
+        - is_formatted.stdout == "no" or (force_format | bool)
+      tags: [format]
+
+    # ========================================================================
+    # 6. MOUNT LUN
+    # ========================================================================
+    - name: Ensure mount point exists
+      file:
+        path: "{{ test_mount }}"
+        state: directory
+        mode: '0755'
+      tags: [mount]
+
+    - name: Mount LUN
+      mount:
+        path: "{{ test_mount }}"
+        src: "{{ actual_lun }}"
+        fstype: ext4
+        opts: defaults,noatime,nodiratime
+        state: mounted
+      tags: [mount]
+
+    - name: Verify mount
+      shell: df -h {{ test_mount }}
+      register: mount_check
+      tags: [mount]
+
+    - name: Display mount status
+      debug:
+        var: mount_check.stdout_lines
+      tags: [mount]
+
+    # ========================================================================
+    # 7. CREATE TEST FILE (optional)
+    # ========================================================================
+    - name: Create test file for fio
+      shell: |
+        dd if=/dev/zero of={{ test_mount }}/testfile bs=1M count=1024 status=progress 2>&1
+      args:
+        creates: "{{ test_mount }}/testfile"
+      when: create_test_file | bool
+      tags: [testfile]
+
+    - name: Verify test file
+      shell: ls -lh {{ test_mount }}/testfile
+      register: testfile_info
+      when: create_test_file | bool
+      tags: [testfile]
+
+    - name: Display test file info
+      debug:
+        var: testfile_info.stdout_lines
+      when: testfile_info is defined
+      tags: [testfile]
+
+    # ========================================================================
+    # 8. FINAL STATUS
+    # ========================================================================
+    - name: Final status
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════╗
+          ║ ✅ {{ inventory_hostname }} LUN setup complete               ║
+          ╠══════════════════════════════════════════════════════════════╣
+          ║ LUN: {{ actual_lun }}
+          ║ IQN: {{ lun_iqn | default('not specified') }}
+          ║ Mount: {{ test_mount }}
+          ║ Test file: {{ test_mount }}/testfile
+          ╚══════════════════════════════════════════════════════════════╝
+      tags: [info]

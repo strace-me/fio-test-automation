@@ -1,0 +1,72 @@
+# ============================================================================
+# Ansible playbook для запуска тестов FIO на клиентах СХД
+# Используется в Jenkins pipeline 'fio-storage-test-ansible'
+# ============================================================================
+# Параметры (переопределяются через -e):
+#   target_hosts      - список хостов (например, fio-ubuntu-1x1,fio-ubuntu-1x2)
+#   test_type         - тип нагрузки (randread, randwrite, read, write)
+#   block_size        - размер блока (4k, 64k, 1M)
+#   size              - размер тестового файла (2G)
+#   runtime           - длительность теста в секундах
+#   iodepth           - глубина очереди
+#   numjobs           - количество параллельных заданий на клиент
+#   direct            - прямой ввод/вывод (1 или 0)
+#   results_dir       - директория для сохранения JSON-результатов на Jenkins master
+# ============================================================================
+
+- name: Run FIO test on selected clients
+  hosts: "{{ target_hosts | default('fio_clients') }}"
+  gather_facts: no
+  vars:
+    test_dir: "/mnt/lun_test"
+    test_file: "testfile"
+    test_type: "randread"
+    block_size: "4k"
+    size: "2G"
+    runtime: 30
+    iodepth: 128
+    numjobs: 4
+    direct: 1
+    results_dir: "/var/lib/jenkins/results/{{ ansible_date_time.epoch }}"
+
+  tasks:
+    # Создаём директорию для результатов на Jenkins master
+    - name: Create results directory on localhost
+      local_action:
+        module: file
+        path: "{{ results_dir }}"
+        state: directory
+      run_once: yes
+
+    # Запускаем fio. Даже при ошибке сохраняем результат (JSON всё равно генерируется)
+    - name: Run fio test
+      shell: |
+        cd {{ test_dir }}
+        fio --name={{ inventory_hostname }} \
+            --filename={{ test_file }} \
+            --rw={{ test_type }} \
+            --bs={{ block_size }} \
+            --size={{ size }} \
+            --runtime={{ runtime }} \
+            --time_based \
+            --direct={{ direct }} \
+            --ioengine=libaio \
+            --iodepth={{ iodepth }} \
+            --numjobs={{ numjobs }} \
+            --group_reporting \
+            --output-format=json
+      register: fio_result
+      ignore_errors: yes   # Продолжаем выполнение на других хостах, даже если этот упал
+
+    # Сохраняем JSON-вывод (даже если есть ошибка)
+    - name: Save result to file
+      local_action:
+        module: copy
+        content: "{{ fio_result.stdout }}"
+        dest: "{{ results_dir }}/{{ inventory_hostname }}.json"
+      ignore_errors: yes
+
+    # Информируем об успешном завершении (или ошибке)
+    - name: Display summary
+      debug:
+        msg: "{{ inventory_hostname }} test completed (exit code {{ fio_result.rc }})"

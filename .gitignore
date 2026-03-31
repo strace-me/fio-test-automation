@@ -1,0 +1,43 @@
+# SSH keys
+ssh-keys/
+*.pem
+*.key
+
+# Inventory with real data
+inventory/hosts.ini
+inventory/vars.env
+inventory/secrets.yml
+
+# Test results
+results/
+/var/lib/jenkins/results/
+*.json
+*.log
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.secret
+*.password
+.env
+vault_pass.txt
+.vault_pass
+
+# Temporary files
+*.tmp
+*.bak
+*.orig

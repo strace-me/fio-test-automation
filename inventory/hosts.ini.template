@@ -1,0 +1,34 @@
+[all:vars]
+ansible_user=root
+ansible_ssh_private_key_file=ssh-keys/id_rsa
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_python_interpreter=/usr/bin/python3
+host_key_checking = False
+
+storage_ip = {{ STORAGE_IP }}
+storage_ip_secondary = {{ STORAGE_IP_SECONDARY }}
+
+[jenkins]
+jenkins-vm ansible_host={{ JENKINS_IP }}
+
+[fio_clients]
+fio-ubuntu-1x1 ansible_host={{ CLIENT1_IP }} lun_iqn="{{ CLIENT1_IQN }}" lun_device="/dev/sdb"
+fio-ubuntu-1x2 ansible_host={{ CLIENT2_IP }} lun_iqn="{{ CLIENT2_IQN }}" lun_device="/dev/sdb"
+fio-ubuntu-2x1 ansible_host={{ CLIENT3_IP }} lun_iqn="{{ CLIENT3_IQN }}" lun_device="/dev/sdb"
+fio-ubuntu-2x2 ansible_host={{ CLIENT4_IP }} lun_iqn="{{ CLIENT4_IQN }}" lun_device="/dev/sdb"
+
+[all_clients:children]
+jenkins
+fio_clients
+
+[client_group_a]
+fio-ubuntu-1x1
+fio-ubuntu-1x2
+
+[client_group_b]
+fio-ubuntu-2x1
+fio-ubuntu-2x2
+
+[all_fio:children]
+client_group_a
+client_group_b

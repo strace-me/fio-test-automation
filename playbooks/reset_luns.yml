@@ -1,0 +1,65 @@
+# ============================================================================
+# Ansible Playbook: Reset LUNs on storage clients
+# ============================================================================
+# This playbook:
+#   1. Unmounts LUNs
+#   2. Removes mount points
+#   3. Logs out from iSCSI targets
+#   4. Removes iSCSI node records
+#
+# Variables:
+#   target_hosts - list of hosts to reset (default: fio_clients)
+# ============================================================================
+
+- name: Reset LUNs on storage clients
+  hosts: "{{ target_hosts | default('fio_clients') }}"
+  vars:
+    test_mount: "/mnt/lun_test"
+
+  tasks:
+    # ========================================================================
+    # 1. UNMOUNT AND CLEANUP
+    # ========================================================================
+    - name: Unmount LUN (ignore if not mounted)
+      mount:
+        path: "{{ test_mount }}"
+        state: unmounted
+      ignore_errors: yes
+      tags: [unmount]
+
+    - name: Remove mount point (force remove)
+      file:
+        path: "{{ test_mount }}"
+        state: absent
+      ignore_errors: yes
+      tags: [cleanup]
+
+    # ========================================================================
+    # 2. ISCSI CLEANUP
+    # ========================================================================
+    - name: Logout from all iSCSI targets
+      shell: |
+        iscsiadm -m session -u 2>/dev/null || true
+      ignore_errors: yes
+      tags: [iscsi]
+
+    - name: Remove all iSCSI node records
+      shell: |
+        iscsiadm -m node -o delete 2>/dev/null || true
+      ignore_errors: yes
+      tags: [iscsi]
+
+    # ========================================================================
+    # 3. FINAL STATUS
+    # ========================================================================
+    - name: Display status
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════╗
+          ║ 🔄 {{ inventory_hostname }} LUN reset complete              ║
+          ╠══════════════════════════════════════════════════════════════╣
+          ║ Mount point: {{ test_mount }} removed
+          ║ iSCSI sessions: logged out
+          ║ iSCSI nodes: removed
+          ╚══════════════════════════════════════════════════════════════╝
+      tags: [info]

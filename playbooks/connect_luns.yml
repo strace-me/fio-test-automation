@@ -1,0 +1,180 @@
+---
+# ============================================================================
+# Connect iSCSI LUNs to FIO Clients
+# ============================================================================
+# This playbook connects specified clients to their LUNs on the storage array
+# ============================================================================
+
+- name: Connect iSCSI LUNs to FIO clients
+  hosts: "{{ target_hosts | default('fio_clients') }}"
+  gather_facts: yes
+  
+  vars:
+    storage_ip: "10.20.3.23"
+    storage_ip_secondary: "10.20.3.24"
+    test_mount: "/mnt/lun_test"
+    
+    # LUN mapping per client (from inventory)
+    # These are automatically loaded from inventory variables
+    
+  tasks:
+    - name: Display target hosts
+      debug:
+        msg: "Connecting LUNs for: {{ ansible_play_hosts | join(', ') }}"
+      run_once: true
+
+    - name: Install iSCSI initiator
+      apt:
+        name: open-iscsi
+        state: present
+        update_cache: yes
+      tags: [install]
+
+    - name: Start and enable iscsid service
+      systemd:
+        name: iscsid
+        state: started
+        enabled: yes
+      tags: [install]
+
+    - name: Discovery iSCSI targets
+      shell: |
+        iscsiadm -m discovery -t sendtargets -p {{ storage_ip }}
+      register: discovery
+      changed_when: false
+      tags: [discover]
+
+    - name: Show discovered targets
+      debug:
+        var: discovery.stdout_lines
+      when: discovery.stdout is defined
+      tags: [discover]
+
+    - name: Connect to iSCSI target (if lun_iqn defined)
+      shell: |
+        iscsiadm -m node --targetname="{{ lun_iqn }}" --portal={{ storage_ip }}:3260 --login
+      when: lun_iqn is defined
+      register: login_result
+      ignore_errors: yes
+      tags: [connect]
+
+    - name: Configure automatic login on boot
+      shell: |
+        iscsiadm -m node --targetname="{{ lun_iqn }}" --portal={{ storage_ip }}:3260 \
+          --op=update --name=node.startup --value=automatic
+      when: lun_iqn is defined
+      tags: [connect]
+
+    - name: Wait for LUN device to appear
+      pause:
+        seconds: 5
+      tags: [connect]
+
+    - name: Rescan SCSI bus
+      shell: |
+        for host in /sys/class/scsi_host/host*; do
+          echo "- - -" > $host/scan 2>/dev/null || true
+        done
+      changed_when: false
+      tags: [connect]
+
+    - name: Get LUN device name
+      shell: |
+        lsscsi | grep "{{ storage_ip }}" | awk '{print $NF}' | head -1
+      register: lun_device_detected
+      changed_when: false
+      tags: [detect]
+
+    - name: Use predefined device if available
+      set_fact:
+        actual_lun: "{{ lun_device | default(lun_device_detected.stdout, true) }}"
+      tags: [detect]
+
+    - name: Display detected LUN
+      debug:
+        msg: |
+          Client: {{ inventory_hostname }}
+          LUN IQN: {{ lun_iqn }}
+          Device: {{ actual_lun }}
+      tags: [detect]
+
+    - name: Check if LUN is already formatted
+      shell: blkid {{ actual_lun }} 2>/dev/null | grep -q ext4 && echo "yes" || echo "no"
+      register: is_formatted
+      changed_when: false
+      tags: [format]
+
+    - name: Create filesystem on LUN (if not formatted)
+      filesystem:
+        fstype: ext4
+        dev: "{{ actual_lun }}"
+        force: no
+      when: is_formatted.stdout == "no"
+      tags: [format]
+
+    - name: Create mount point
+      file:
+        path: "{{ test_mount }}"
+        state: directory
+        mode: '0755'
+      tags: [mount]
+
+    - name: Mount LUN
+      mount:
+        path: "{{ test_mount }}"
+        src: "{{ actual_lun }}"
+        fstype: ext4
+        opts: defaults,noatime,nodiratime
+        state: mounted
+      tags: [mount]
+
+    - name: Verify mount
+      shell: df -h {{ test_mount }}
+      register: mount_check
+      tags: [mount]
+
+    - name: Display mount status
+      debug:
+        var: mount_check.stdout_lines
+      tags: [mount]
+
+    - name: Create test file for validation
+      shell: dd if=/dev/zero of={{ test_mount }}/testfile bs=1M count=1024 status=progress
+      args:
+        creates: "{{ test_mount }}/testfile"
+      tags: [validate]
+
+    - name: Quick validation test
+      shell: |
+        cd {{ test_mount }}
+        fio --name=validation \
+            --filename=testfile \
+            --rw=randread \
+            --bs=4k \
+            --size=100M \
+            --runtime=10 \
+            --time_based \
+            --direct=1 \
+            --output-format=json
+      register: validation_test
+      tags: [validate]
+
+    - name: Show validation results
+      debug:
+        msg: |
+          ✅ Client {{ inventory_hostname }} ready!
+          LUN: {{ actual_lun }}
+          Mount: {{ test_mount }}
+          Validation: {{ validation_test.stdout | from_json | json_query('jobs[0].read.iops') | round(0) }} IOPS
+      tags: [validate]
+
+    - name: Final status
+      debug:
+        msg: |
+          ============================================
+          ✅ {{ inventory_hostname }} configured
+          LUN: {{ actual_lun }}
+          IQN: {{ lun_iqn }}
+          Mount: {{ test_mount }}
+          ============================================
+      tags: [info]

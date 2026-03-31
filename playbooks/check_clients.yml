@@ -1,0 +1,7 @@
+---
+- name: Check client availability
+  hosts: "{{ target_hosts }}"
+  gather_facts: no
+  tasks:
+    - name: Ping
+      ping:
