@@ -1,4 +1,8 @@
 #!/bin/bash
+# First deployment script
+# Interactive setup of infrastructure variables
+
+#!/bin/bash
 set -e
 
 echo "╔══════════════════════════════════════════════════════════════╗"
